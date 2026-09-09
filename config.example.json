@@ -1,0 +1,9 @@
+{
+  "pool_host": "pool.example.com",
+  "pool_port": 3333,
+  "user": "YOUR_WALLET_ADDRESS.worker1",
+  "pass": "x",
+  "threads": 0,
+  "metrics_port": 9101,
+  "engine": "sha256d"
+}

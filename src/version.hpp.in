@@ -1,0 +1,5 @@
+#pragma once
+
+namespace minerby {
+inline constexpr char kVersion[] = "@PROJECT_VERSION@";
+}

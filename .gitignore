@@ -1,0 +1,25 @@
+# Build output
+/build/
+/build-*/
+/out/
+/cmake-build-*/
+*.obj
+*.o
+*.exe
+*.pdb
+*.ilk
+
+# Dependencies fetched by CMake
+/_deps/
+
+# Local config with real pool credentials / wallet
+/config.json
+*.local.json
+
+# Editor / OS
+.vs/
+.vscode/
+.idea/
+*.user
+.DS_Store
+Thumbs.db
