@@ -6,6 +6,7 @@ ships two hashing engines, and runs unattended for weeks.
 
 ![CI](https://github.com/Liuberth33/minerby/actions/workflows/ci.yml/badge.svg)
 &nbsp;·&nbsp; C++20 · CMake · MSVC / GCC · Windows + Linux
+&nbsp;·&nbsp; **[Español ↓](#-español)**
 
 > ⚠️ **Legitimate use only.** Run `minerby` on hardware you own or administer, and
 > be mindful of the CPU, power and heat it costs. It is not built to run on other
@@ -175,6 +176,98 @@ Any miner trips "coinminer" heuristics (Avast flags `Win64:CoinMiner` and
 DNS-blocks pool domains). If a security suite blocks the build or the binary, add
 the project folder to its exceptions and/or allow the pool domain — it is a
 false positive on an unsigned mining binary, not an infection.
+
+---
+
+## 🇪🇸 Español
+
+Minero de **CPU escrito desde cero en C++20**, hecho para entender la minería
+Proof-of-Work de principio a fin, no para ganar dinero. Habla dos protocolos de
+pool, trae dos motores de hashing y aguanta semanas funcionando solo.
+
+> ⚠️ **Uso legítimo únicamente.** Ejecútalo en hardware que poseas o administres,
+> consciente de la CPU, la energía y el calor que cuesta. No está pensado para
+> equipos ajenos ni para ocultar su actividad.
+
+### Qué hace
+
+`minerby` cubre el primer tramo: calcular hashes, encontrar shares y enviarlas
+para que las monedas lleguen a una wallet tuya. Lo de después (vender en un
+exchange) es manual.
+
+| Capa | Implementación |
+|------|----------------|
+| **Protocolo de pool** | **Stratum V1** (estilo Bitcoin) *y* el protocolo **Monero / xmrig JSON**, tras una interfaz `PoolClient` |
+| **Motor PoW** | **SHA-256d** propio (streaming) y **RandomX** (`rx/0`, Monero mainnet) vía la librería oficial, tras una interfaz `IHasher` |
+| **Trabajo** | `MiningJob` genérico (blob + offset del nonce + target de 256 bits); en Stratum V1 se ensambla el coinbase, se pliega la rama merkle y se arma la cabecera de 80 bytes |
+| **Minado** | Pool de hilos fijo, reemplazo de trabajo por generación, pausa/reanudación para re-derivar RandomX, prioridad de CPU baja opcional |
+| **Operación** | Hashrate (EMA), endpoint `/metrics` (Prometheus), estadísticas persistentes entre reinicios, watchdog de conexión, apagado limpio, scripts de auto-reinicio |
+
+Verificado contra un pool real de Monero: login, parseo de jobs, re-derivación de
+RandomX con el seed real de la red, detección y envío de shares — el pool
+recalculó el hash por su cuenta y coincidió; solo rechazó por dificultad.
+
+### Compilar
+
+Requiere compilador C++20 (MSVC o GCC), CMake ≥ 3.24, Ninja y los submódulos.
+
+```bash
+git clone --recurse-submodules https://github.com/Liuberth33/minerby.git
+cd minerby
+```
+
+**Windows (MSVC):** `./scripts/build.ps1`
+
+**Cualquier plataforma:**
+
+```bash
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+Sin RandomX (solo SHA-256d): `-DMINERBY_WITH_RANDOMX=OFF`.
+
+### Uso
+
+```bash
+# Benchmark de un motor (sin red)
+./build/minerby bench --engine randomx --threads 4 --seconds 30
+
+# Estimación de rentabilidad
+./build/minerby estimate --hashrate 2500 --net-difficulty 400000000000 --xmr-price 150
+
+# Minar
+cp config.monero.example.json config.json     # edítalo con tu dirección y tu pool
+./build/minerby run --config config.json
+
+# 24/7
+./scripts/mine-forever.ps1                     # relanza el minero si se cae
+./scripts/install-autostart.ps1               # tarea al iniciar sesión (sin admin)
+```
+
+`config.json` está en `.gitignore` — nunca subas credenciales ni una dirección de
+wallet. Referencia de configuración y estructura del código: ver la parte en
+inglés arriba.
+
+### Estado
+
+Fases 0-3 completas: scaffold + CI · SHA-256d + Stratum V1 · RandomX + Monero ·
+operación 24/7 desatendida. Pendiente (3+): modo `--engine xmrig`, feed de precio
+en vivo, servicio de Windows nativo, dashboard web, failover multi-pool.
+
+**Aparcado a la espera de hardware.** Minar Monero por CPU en una laptop fina
+deja céntimos al mes, menos que la electricidad. El proyecto está completo y
+correcto como ejercicio de ingeniería; se retomará en una máquina (o rig
+dedicado) donde los números tengan sentido.
+
+### Antivirus
+
+Todo minero dispara heurísticas de "coinminer" (Avast marca `Win64:CoinMiner` y
+bloquea por DNS los dominios de pools). Si un antivirus bloquea la compilación o
+el binario, añade la carpeta del proyecto a sus excepciones y/o permite el
+dominio del pool — es un falso positivo por ser un binario de minería sin firmar,
+no una infección.
 
 ---
 
