@@ -16,6 +16,9 @@
 /config.json
 *.local.json
 
+# Field-test logs
+*.log
+
 # Editor / OS
 .vs/
 .vscode/

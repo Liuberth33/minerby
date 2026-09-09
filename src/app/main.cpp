@@ -161,11 +161,17 @@ int cmd_estimate(double hashrate, double net_diff, double block_reward,
 // ---------------------------------------------------------------------------
 // run
 // ---------------------------------------------------------------------------
-int cmd_run(const minerby::Config& cfg) {
+int cmd_run(const minerby::Config& cfg, double test_share_diff) {
   const unsigned threads = cfg.effective_threads();
   spdlog::info("run: protocol={} engine={} pool={}:{} user={} threads={}",
                cfg.protocol, cfg.engine, cfg.pool_host, cfg.pool_port, cfg.user,
                threads);
+  if (test_share_diff > 0.0) {
+    spdlog::warn(
+        "--share-diff {:.0f}: forcing an artificially low target for testing; "
+        "the pool will reject these as low-difficulty shares",
+        test_share_diff);
+  }
 
   std::unique_ptr<minerby::PoolClient> pool_client;
   std::function<std::unique_ptr<minerby::IHasher>()> factory;
@@ -211,7 +217,11 @@ int cmd_run(const minerby::Config& cfg) {
   std::vector<uint8_t> current_seed;
 
   minerby::PoolClient::Callbacks cb;
-  cb.on_job = [&](const minerby::MiningJob& job, const std::vector<uint8_t>& seed) {
+  cb.on_job = [&](const minerby::MiningJob& job_in, const std::vector<uint8_t>& seed) {
+    minerby::MiningJob job = job_in;
+    if (test_share_diff > 0.0) {
+      job.target = minerby::target_from_difficulty64(test_share_diff);
+    }
     if (!seed.empty() && seed != current_seed) {
 #ifdef MINERBY_WITH_RANDOMX
       const bool was_running = pool.running();
@@ -307,6 +317,7 @@ int main(int argc, char** argv) {
   std::signal(SIGINT, on_signal);
   std::signal(SIGTERM, on_signal);
   spdlog::set_pattern("%^[%H:%M:%S] [%l]%$ %v");
+  spdlog::flush_on(spdlog::level::trace);  // don't lose the tail if killed
 
   CLI::App app{"minerby - a from-scratch CPU miner (sha256d/Stratum V1, RandomX/Monero)"};
   app.set_version_flag("--version", std::string(minerby::kVersion));
@@ -336,6 +347,10 @@ int main(int argc, char** argv) {
   run->add_option("--user", ov_user, "Override user");
   run->add_option("--threads", ov_threads, "Override thread count");
   run->add_option("--metrics-port", ov_metrics, "Override metrics port (0 disables)");
+  double share_diff = 0;
+  run->add_option("--share-diff", share_diff,
+                  "TEST ONLY: force this local share difficulty to exercise the "
+                  "submit path (pool will reject as low-difficulty)");
 
   auto* est = app.add_subcommand("estimate", "Rough profitability estimate");
   double est_hr = 0, est_diff = 0, est_reward = 0.6, est_price = 0;
@@ -363,7 +378,7 @@ int main(int argc, char** argv) {
       if (ov_threads >= 0) cfg.threads = ov_threads;
       if (ov_metrics >= 0) cfg.metrics_port = static_cast<uint16_t>(ov_metrics);
       cfg.validate();
-      return cmd_run(cfg);
+      return cmd_run(cfg, share_diff);
     } catch (const std::exception& e) {
       spdlog::error("{}", e.what());
       return 1;

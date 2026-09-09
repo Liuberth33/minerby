@@ -27,6 +27,10 @@ Hash256 monero_target_from_hex(const std::string& hex);
 // Rough difficulty implied by a target: 2^64 / (top 64 bits of the target).
 double target_to_difficulty(const Hash256& target);
 
+// Inverse of target_to_difficulty: a 256-bit target whose top 64 bits encode
+// `diff`. Used by the --share-diff test override to force frequent shares.
+Hash256 target_from_difficulty64(double diff);
+
 // True when `hash` <= `target` (both little-endian).
 bool meets_target(const Hash256& hash, const Hash256& target);
 

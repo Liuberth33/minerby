@@ -98,6 +98,16 @@ double target_to_difficulty(const Hash256& target) {
   return 18446744073709551615.0 / static_cast<double>(hi);
 }
 
+Hash256 target_from_difficulty64(double diff) {
+  Hash256 t{};
+  t.fill(0);
+  const uint64_t hi = (diff <= 1.0)
+                          ? 0xFFFFFFFFFFFFFFFFull
+                          : static_cast<uint64_t>(18446744073709551615.0 / diff);
+  for (int i = 0; i < 8; ++i) t[24 + i] = static_cast<uint8_t>(hi >> (8 * i));
+  return t;
+}
+
 bool meets_target(const Hash256& hash, const Hash256& target) {
   for (int i = 31; i >= 0; --i) {
     if (hash[i] < target[i]) return true;
