@@ -2,12 +2,13 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
-#include <cstdio>
 #include <cstdint>
+#include <cstdio>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <CLI/CLI.hpp>
 #include <spdlog/spdlog.h>
@@ -15,17 +16,25 @@
 #include "config/config.hpp"
 #include "miner/worker.hpp"
 #include "minerby/version.hpp"
+#include "pool/monero_client.hpp"
+#include "pool/pool_client.hpp"
+#include "pool/stratum_v1_client.hpp"
 #include "pow/sha256d_hasher.hpp"
-#include "stratum/stratum_client.hpp"
-#include "stratum/work.hpp"
 #include "telemetry/http_server.hpp"
 #include "telemetry/metrics.hpp"
-#include "util/hex.hpp"
+
+#ifdef MINERBY_WITH_RANDOMX
+#include "pow/randomx_context.hpp"
+#include "pow/randomx_hasher.hpp"
+#endif
+
+#ifdef _WIN32
+#include <windows.h>  // GlobalMemoryStatusEx
+#endif
 
 namespace {
 
 std::atomic<bool> g_stop{false};
-
 void on_signal(int) { g_stop.store(true); }
 
 std::string human_hashrate(double hs) {
@@ -39,30 +48,59 @@ std::string human_hashrate(double hs) {
   return buf;
 }
 
-std::unique_ptr<minerby::IHasher> make_hasher(const std::string& engine) {
-  if (engine == "sha256d") return std::make_unique<minerby::Sha256dHasher>();
-  return nullptr;
+double available_ram_mb() {
+#ifdef _WIN32
+  MEMORYSTATUSEX ms{};
+  ms.dwLength = sizeof(ms);
+  if (GlobalMemoryStatusEx(&ms)) return static_cast<double>(ms.ullAvailPhys) / (1024.0 * 1024.0);
+#endif
+  return -1.0;
 }
 
-int cmd_bench(unsigned threads, int seconds, const std::string& engine) {
-  if (!make_hasher(engine)) {
-    spdlog::error("unknown engine '{}'", engine);
-    return 2;
-  }
+// ---------------------------------------------------------------------------
+// bench
+// ---------------------------------------------------------------------------
+int cmd_bench(unsigned threads, int seconds, const std::string& engine, bool fast) {
   if (threads == 0) {
     threads = std::thread::hardware_concurrency();
     if (threads == 0) threads = 1;
   }
+
+  std::function<std::unique_ptr<minerby::IHasher>()> factory;
+  minerby::MiningJob job;
+  job.target.fill(0);  // nothing ever "wins" - pure throughput
+
+#ifdef MINERBY_WITH_RANDOMX
+  std::unique_ptr<minerby::RandomXContext> rx;
+#endif
+
+  if (engine == "sha256d") {
+    factory = [] { return std::make_unique<minerby::Sha256dHasher>(); };
+    job.blob.assign(80, 0x11);
+    job.nonce_offset = 76;
+  } else if (engine == "randomx") {
+#ifdef MINERBY_WITH_RANDOMX
+    minerby::RandomXContext::Options opt;
+    opt.fast_mode = fast;
+    rx = std::make_unique<minerby::RandomXContext>(opt);
+    rx->ensure_seed(std::vector<uint8_t>(32, 0x2a));  // arbitrary bench seed
+    minerby::RandomXContext* ctx = rx.get();
+    factory = [ctx] { return std::make_unique<minerby::RandomXHasher>(*ctx); };
+    job.blob.assign(76, 0x11);
+    job.nonce_offset = 39;
+#else
+    spdlog::error("this build has no RandomX engine");
+    return 2;
+#endif
+  } else {
+    spdlog::error("unknown engine '{}'", engine);
+    return 2;
+  }
+
   spdlog::info("bench: engine={} threads={} duration={}s", engine, threads, seconds);
 
-  minerby::MinerPool pool([engine] { return make_hasher(engine); }, threads);
-
-  // Synthetic work: arbitrary header, all-zero target so no "share" ever fires.
-  minerby::Work w;
-  for (std::size_t i = 0; i < w.header.size(); ++i)
-    w.header[i] = static_cast<uint8_t>(i * 7 + 1);
-  w.target.fill(0);
-  pool.set_work(w);
+  minerby::MinerPool pool(factory, threads);
+  pool.set_work(job);
   pool.start();
 
   minerby::Metrics metrics;
@@ -79,74 +117,130 @@ int cmd_bench(unsigned threads, int seconds, const std::string& engine) {
   }
 
   pool.stop();
-  const double elapsed = std::chrono::duration<double>(
-                             std::chrono::steady_clock::now() - t0)
-                             .count();
+  const double elapsed =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
   const uint64_t total = pool.total_hashes();
   spdlog::info("bench done: {} hashes in {:.1f}s -> {}", total, elapsed,
                human_hashrate(elapsed > 0 ? total / elapsed : 0));
   return 0;
 }
 
+// ---------------------------------------------------------------------------
+// estimate
+// ---------------------------------------------------------------------------
+int cmd_estimate(double hashrate, double net_diff, double block_reward,
+                 double price) {
+  if (hashrate <= 0 || net_diff <= 0) {
+    spdlog::error("estimate: --hashrate and --net-difficulty must be positive");
+    return 2;
+  }
+  constexpr double kBlockTime = 120.0;  // Monero target block time (s)
+  const double net_hashrate = net_diff / kBlockTime;
+  const double share = hashrate / net_hashrate;
+  const double blocks_per_day = 86400.0 / kBlockTime;
+  const double xmr_day = share * blocks_per_day * block_reward;
+
+  std::printf("\n  your hashrate     : %s\n", human_hashrate(hashrate).c_str());
+  std::printf("  network hashrate  : %s  (difficulty %.0f)\n",
+              human_hashrate(net_hashrate).c_str(), net_diff);
+  std::printf("  your share        : %.6f %% of the network\n", share * 100.0);
+  std::printf("  est. XMR / day    : %.8f  (at %.2f XMR/block)\n", xmr_day,
+              block_reward);
+  std::printf("  est. XMR / month  : %.6f\n", xmr_day * 30.0);
+  if (price > 0) {
+    std::printf("  est. USD / day    : %.4f  (at %.2f USD/XMR)\n", xmr_day * price,
+                price);
+    std::printf("  est. USD / month  : %.2f\n", xmr_day * 30.0 * price);
+  }
+  std::printf(
+      "\n  Rough figures: ignores pool fees, variance, stale shares and "
+      "difficulty drift.\n\n");
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// run
+// ---------------------------------------------------------------------------
 int cmd_run(const minerby::Config& cfg) {
   const unsigned threads = cfg.effective_threads();
-  spdlog::info("run: pool={}:{} user={} engine={} threads={}", cfg.pool_host,
-               cfg.pool_port, cfg.user, cfg.engine, threads);
+  spdlog::info("run: protocol={} engine={} pool={}:{} user={} threads={}",
+               cfg.protocol, cfg.engine, cfg.pool_host, cfg.pool_port, cfg.user,
+               threads);
 
-  minerby::StratumClient stratum(cfg.pool_host, cfg.pool_port, cfg.user, cfg.pass);
-  minerby::MinerPool pool([e = cfg.engine] { return make_hasher(e); }, threads);
+  std::unique_ptr<minerby::PoolClient> pool_client;
+  std::function<std::unique_ptr<minerby::IHasher>()> factory;
+
+#ifdef MINERBY_WITH_RANDOMX
+  std::unique_ptr<minerby::RandomXContext> rx;
+#endif
+
+  if (cfg.protocol == "monero") {
+#ifdef MINERBY_WITH_RANDOMX
+    if (cfg.randomx_fast()) {
+      const double avail = available_ram_mb();
+      if (avail > 0 && avail < 3000) {
+        spdlog::warn(
+            "randomx fast mode wants ~2.3 GB free; only {:.0f} MB available - "
+            "expect swapping. Consider \"mode\": \"light\".",
+            avail);
+      }
+    }
+    minerby::RandomXContext::Options opt;
+    opt.fast_mode = cfg.randomx_fast();
+    opt.init_threads = cfg.randomx.init_threads;
+    opt.large_pages = cfg.randomx.large_pages;
+    opt.secure_jit = cfg.randomx.secure;
+    rx = std::make_unique<minerby::RandomXContext>(opt);
+    minerby::RandomXContext* ctx = rx.get();
+    factory = [ctx] { return std::make_unique<minerby::RandomXHasher>(*ctx); };
+    pool_client = std::make_unique<minerby::MoneroClient>(cfg.pool_host, cfg.pool_port,
+                                                         cfg.user, cfg.pass);
+#else
+    spdlog::error("this build has no RandomX engine");
+    return 1;
+#endif
+  } else {
+    factory = [] { return std::make_unique<minerby::Sha256dHasher>(); };
+    pool_client = std::make_unique<minerby::StratumV1Client>(
+        cfg.pool_host, cfg.pool_port, cfg.user, cfg.pass);
+  }
+
+  minerby::MinerPool pool(factory, threads);
   minerby::Metrics metrics;
-
   std::mutex submit_mtx;
-  std::mutex job_mtx;
-  minerby::StratumJob current_job;
-  bool have_job = false;
-  uint64_t xn2_counter = 0;
+  std::vector<uint8_t> current_seed;
 
-  auto rebuild_work = [&] {
-    std::lock_guard<std::mutex> lk(job_mtx);
-    if (!have_job) return;
-    const std::string xn2 =
-        minerby::encode_extranonce2(xn2_counter++, stratum.extranonce2_size());
-    minerby::Work w;
-    if (minerby::build_work(current_job, stratum.extranonce1(), xn2,
-                            stratum.difficulty(), w)) {
-      pool.set_work(w);
-    } else {
-      spdlog::warn("could not build work from job {}", current_job.job_id);
+  minerby::PoolClient::Callbacks cb;
+  cb.on_job = [&](const minerby::MiningJob& job, const std::vector<uint8_t>& seed) {
+    if (!seed.empty() && seed != current_seed) {
+#ifdef MINERBY_WITH_RANDOMX
+      const bool was_running = pool.running();
+      if (was_running) pool.pause();
+      spdlog::info("randomx: seed changed, re-keying...");
+      rx->ensure_seed(seed);
+      current_seed = seed;
+      if (was_running) {
+        pool.rebuild_hashers();
+        pool.resume();
+      }
+#endif
     }
-  };
-
-  minerby::StratumClient::Callbacks cb;
-  cb.on_difficulty = [&](double d) {
-    metrics.set_difficulty(d);
-    rebuild_work();
-  };
-  cb.on_job = [&](const minerby::StratumJob& j) {
-    {
-      std::lock_guard<std::mutex> lk(job_mtx);
-      current_job = j;
-      have_job = true;
-    }
-    rebuild_work();
+    if (!pool.running()) pool.start();
+    pool.set_work(job);
+    metrics.set_difficulty(pool_client->difficulty());
   };
   cb.on_submit_result = [&](bool ok, const std::string&) {
     if (ok) metrics.share_accepted();
     else metrics.share_rejected();
   };
-  stratum.set_callbacks(cb);
+  pool_client->set_callbacks(cb);
 
-  pool.on_share = [&](const minerby::Work& w, uint32_t nonce) {
-    uint8_t nb[4] = {static_cast<uint8_t>(nonce), static_cast<uint8_t>(nonce >> 8),
-                     static_cast<uint8_t>(nonce >> 16),
-                     static_cast<uint8_t>(nonce >> 24)};
-    const std::string nonce_hex = minerby::to_hex(nb, 4);
+  pool.on_share = [&](const minerby::MiningJob& job, uint32_t nonce,
+                      const uint8_t* digest) {
     std::lock_guard<std::mutex> lk(submit_mtx);
-    spdlog::info("found share: job={} nonce={}", w.job_id, nonce_hex);
-    stratum.submit(w.job_id, w.extranonce2_hex, w.ntime_hex, nonce_hex);
+    spdlog::info("found share: job={} nonce={:08x}", job.job_id, nonce);
+    pool_client->submit(job, nonce, digest);
   };
-
-  pool.start();
 
   std::unique_ptr<minerby::HttpServer> http;
   if (cfg.metrics_port != 0) {
@@ -162,9 +256,9 @@ int cmd_run(const minerby::Config& cfg) {
   auto next_status = std::chrono::steady_clock::now() + std::chrono::seconds(5);
 
   while (!g_stop.load()) {
-    if (!stratum.connected()) {
+    if (!pool_client->connected()) {
       spdlog::info("connecting to pool...");
-      if (!stratum.connect_and_subscribe()) {
+      if (!pool_client->connect()) {
         spdlog::warn("connect failed, retrying in {}s", backoff);
         for (int i = 0; i < backoff * 10 && !g_stop.load(); ++i)
           std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -174,14 +268,10 @@ int cmd_run(const minerby::Config& cfg) {
       backoff = 1;
     }
 
-    if (!stratum.poll(1000)) {
+    if (!pool_client->poll(1000)) {
       spdlog::warn("pool connection dropped");
-      stratum.disconnect();
+      pool_client->disconnect();
       pool.clear_work();
-      {
-        std::lock_guard<std::mutex> lk(job_mtx);
-        have_job = false;
-      }
       continue;
     }
 
@@ -191,6 +281,15 @@ int cmd_run(const minerby::Config& cfg) {
       spdlog::info("{} | diff {:.3g} | shares {}A/{}R | up {:.0f}s",
                    human_hashrate(s.hashrate), s.difficulty, s.accepted,
                    s.rejected, s.uptime_s);
+      if (cfg.net_difficulty > 0 && s.hashrate > 0) {
+        const double xmr_day = (s.hashrate / (cfg.net_difficulty / 120.0)) *
+                               (86400.0 / 120.0) * cfg.block_reward;
+        if (cfg.coin_price_usd > 0)
+          spdlog::info("  est. ~{:.6f} XMR/day (~{:.2f} USD/day)", xmr_day,
+                       xmr_day * cfg.coin_price_usd);
+        else
+          spdlog::info("  est. ~{:.6f} XMR/day", xmr_day);
+      }
       next_status += std::chrono::seconds(5);
     }
   }
@@ -198,7 +297,7 @@ int cmd_run(const minerby::Config& cfg) {
   spdlog::info("shutting down...");
   pool.stop();
   if (http) http->stop();
-  stratum.disconnect();
+  pool_client->disconnect();
   return 0;
 }
 
@@ -209,23 +308,25 @@ int main(int argc, char** argv) {
   std::signal(SIGTERM, on_signal);
   spdlog::set_pattern("%^[%H:%M:%S] [%l]%$ %v");
 
-  CLI::App app{"minerby - a from-scratch CPU miner (Phase 1: sha256d + Stratum V1)"};
+  CLI::App app{"minerby - a from-scratch CPU miner (sha256d/Stratum V1, RandomX/Monero)"};
   app.set_version_flag("--version", std::string(minerby::kVersion));
   app.require_subcommand(1);
 
   bool verbose = false;
   app.add_flag("-v,--verbose", verbose, "Enable debug logging");
 
-  auto* bench = app.add_subcommand("bench", "Benchmark the hashing kernel (no network)");
+  auto* bench = app.add_subcommand("bench", "Benchmark a hashing kernel (no network)");
   unsigned bench_threads = 0;
   int bench_seconds = 10;
   std::string bench_engine = "sha256d";
+  bool bench_fast = false;
   bench->add_option("-t,--threads", bench_threads, "Worker threads (0 = auto)");
   bench->add_option("-s,--seconds", bench_seconds, "Duration in seconds")
       ->check(CLI::PositiveNumber);
-  bench->add_option("-e,--engine", bench_engine, "Hashing engine");
+  bench->add_option("-e,--engine", bench_engine, "Engine: sha256d | randomx");
+  bench->add_flag("--fast", bench_fast, "RandomX: use fast (2 GB dataset) mode");
 
-  auto* run = app.add_subcommand("run", "Mine against a Stratum pool");
+  auto* run = app.add_subcommand("run", "Mine against a pool");
   std::string cfg_path;
   std::string ov_pool, ov_user;
   int ov_threads = -1;
@@ -236,12 +337,18 @@ int main(int argc, char** argv) {
   run->add_option("--threads", ov_threads, "Override thread count");
   run->add_option("--metrics-port", ov_metrics, "Override metrics port (0 disables)");
 
+  auto* est = app.add_subcommand("estimate", "Rough profitability estimate");
+  double est_hr = 0, est_diff = 0, est_reward = 0.6, est_price = 0;
+  est->add_option("--hashrate", est_hr, "Your hashrate in H/s")->required();
+  est->add_option("--net-difficulty", est_diff, "Monero network difficulty")->required();
+  est->add_option("--block-reward", est_reward, "XMR per block (default 0.6)");
+  est->add_option("--xmr-price", est_price, "USD per XMR (optional)");
+
   CLI11_PARSE(app, argc, argv);
   spdlog::set_level(verbose ? spdlog::level::debug : spdlog::level::info);
 
-  if (*bench) {
-    return cmd_bench(bench_threads, bench_seconds, bench_engine);
-  }
+  if (*bench) return cmd_bench(bench_threads, bench_seconds, bench_engine, bench_fast);
+  if (*est) return cmd_estimate(est_hr, est_diff, est_reward, est_price);
 
   if (*run) {
     try {

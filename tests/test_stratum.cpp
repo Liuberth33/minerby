@@ -59,7 +59,7 @@ TEST_CASE("parse_notify rejects a short param list") {
   CHECK_FALSE(parse_notify(json::parse("{}"), j));
 }
 
-TEST_CASE("build_work lays out an 80-byte header") {
+TEST_CASE("build_work lays out an 80-byte header blob") {
   StratumJob j;
   j.job_id = "j";
   j.prevhash = std::string(64, '0');
@@ -70,21 +70,22 @@ TEST_CASE("build_work lays out an 80-byte header") {
   j.nbits = "1d00ffff";
   j.ntime = "5e0f1a2b";
 
-  Work w;
+  MiningJob w;
   REQUIRE(build_work(j, "cafe", "00000001", 1.0, w));
-  CHECK(w.header.size() == 80);
+  CHECK(w.blob.size() == 80);
+  CHECK(w.nonce_offset == 76);
 
   // version little-endian
-  CHECK(w.header[0] == 0x00);
-  CHECK(w.header[3] == 0x20);
+  CHECK(w.blob[0] == 0x00);
+  CHECK(w.blob[3] == 0x20);
   // nbits little-endian at [72..75] == ff ff 00 1d
-  CHECK(w.header[72] == 0xff);
-  CHECK(w.header[73] == 0xff);
-  CHECK(w.header[74] == 0x00);
-  CHECK(w.header[75] == 0x1d);
+  CHECK(w.blob[72] == 0xff);
+  CHECK(w.blob[73] == 0xff);
+  CHECK(w.blob[74] == 0x00);
+  CHECK(w.blob[75] == 0x1d);
   // nonce starts cleared
-  CHECK(w.header[76] == 0x00);
-  CHECK(w.header[79] == 0x00);
+  CHECK(w.blob[76] == 0x00);
+  CHECK(w.blob[79] == 0x00);
 
   CHECK(w.job_id == "j");
   CHECK(w.extranonce2_hex == "00000001");
@@ -95,6 +96,6 @@ TEST_CASE("build_work lays out an 80-byte header") {
 TEST_CASE("build_work rejects bad hex") {
   StratumJob j;
   j.prevhash = "xyz";
-  Work w;
+  MiningJob w;
   CHECK_FALSE(build_work(j, "cafe", "0001", 1.0, w));
 }

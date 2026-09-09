@@ -1,5 +1,6 @@
 #include "stratum/work.hpp"
 
+#include <array>
 #include <cstring>
 
 #include "pow/sha256.hpp"
@@ -17,7 +18,7 @@ std::string encode_extranonce2(uint64_t value, int size) {
 }
 
 bool build_work(const StratumJob& j, const std::string& xn1,
-                const std::string& xn2_hex, double share_diff, Work& out) {
+                const std::string& xn2_hex, double share_diff, MiningJob& out) {
   try {
     const std::vector<uint8_t> coinb1 = from_hex(j.coinb1);
     const std::vector<uint8_t> coinb2 = from_hex(j.coinb2);
@@ -48,7 +49,7 @@ bool build_work(const StratumJob& j, const std::string& xn1,
     const std::vector<uint8_t> prevhash = from_hex(j.prevhash);
     if (prevhash.size() != 32) return false;
 
-    std::array<uint8_t, 80>& h = out.header;
+    std::array<uint8_t, 80> h{};
     h.fill(0);
 
     // version: little-endian at [0..3]
@@ -82,11 +83,12 @@ bool build_work(const StratumJob& j, const std::string& xn1,
 
     // nonce: [76..79] left zero, filled by the miner
 
+    out.blob.assign(h.begin(), h.end());
+    out.nonce_offset = 76;
     out.target = target_from_difficulty(share_diff);
     out.job_id = j.job_id;
     out.extranonce2_hex = xn2_hex;
     out.ntime_hex = j.ntime;
-    out.nonce_start = 0;
     return true;
   } catch (...) {
     return false;

@@ -1,5 +1,9 @@
 #include "pow/target.hpp"
 
+#include <stdexcept>
+
+#include "util/hex.hpp"
+
 namespace minerby {
 
 Hash256 target_from_difficulty(double diff) {
@@ -56,6 +60,42 @@ Hash256 target_from_compact(uint32_t bits) {
   Hash256 le{};
   for (int i = 0; i < 32; ++i) le[i] = be[31 - i];
   return le;
+}
+
+Hash256 monero_target_from_hex(const std::string& hex) {
+  const std::vector<uint8_t> b = from_hex(hex);  // little-endian bytes
+  Hash256 t{};
+  t.fill(0);
+
+  if (b.size() == 32) {
+    for (int i = 0; i < 32; ++i) t[i] = b[i];
+    return t;
+  }
+
+  uint64_t hi = 0;
+  if (b.size() == 4) {
+    uint32_t compact = 0;
+    for (int i = 0; i < 4; ++i) compact |= static_cast<uint32_t>(b[i]) << (8 * i);
+    if (compact == 0) {
+      t.fill(0xff);
+      return t;
+    }
+    hi = 0xFFFFFFFFFFFFFFFFull / (0xFFFFFFFFull / static_cast<uint64_t>(compact));
+  } else if (b.size() == 8) {
+    for (int i = 0; i < 8; ++i) hi |= static_cast<uint64_t>(b[i]) << (8 * i);
+  } else {
+    throw std::runtime_error("monero_target_from_hex: unexpected length");
+  }
+
+  for (int i = 0; i < 8; ++i) t[24 + i] = static_cast<uint8_t>(hi >> (8 * i));
+  return t;
+}
+
+double target_to_difficulty(const Hash256& target) {
+  uint64_t hi = 0;
+  for (int i = 0; i < 8; ++i) hi |= static_cast<uint64_t>(target[24 + i]) << (8 * i);
+  if (hi == 0) return 0.0;
+  return 18446744073709551615.0 / static_cast<double>(hi);
 }
 
 bool meets_target(const Hash256& hash, const Hash256& target) {

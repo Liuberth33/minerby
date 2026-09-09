@@ -17,6 +17,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 option(MINERBY_BUILD_TESTS "Build the test suite" ON)
+option(MINERBY_WITH_RANDOMX "Build the RandomX (Monero) engine" ON)
 
 # ---------------------------------------------------------------------------
 # Dependencies
@@ -51,6 +52,16 @@ configure_file(
   ${CMAKE_CURRENT_BINARY_DIR}/generated/minerby/version.hpp
   @ONLY)
 
+# RandomX (Monero PoW) - vendored as a submodule, pinned to a v1.x tag for
+# Monero mainnet (rx/0) compatibility.
+if(MINERBY_WITH_RANDOMX)
+  if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/RandomX/CMakeLists.txt)
+    message(FATAL_ERROR
+      "third_party/RandomX is missing. Run: git submodule update --init --recursive")
+  endif()
+  add_subdirectory(third_party/RandomX EXCLUDE_FROM_ALL)
+endif()
+
 # ---------------------------------------------------------------------------
 # Core library
 # ---------------------------------------------------------------------------
@@ -59,7 +70,8 @@ add_library(minerby_core STATIC
   src/pow/sha256d_hasher.cpp
   src/pow/target.cpp
   src/net/tcp_client.cpp
-  src/stratum/stratum_client.cpp
+  src/pool/stratum_v1_client.cpp
+  src/pool/monero_client.cpp
   src/stratum/parse.cpp
   src/stratum/work.cpp
   src/miner/worker.cpp
@@ -67,6 +79,16 @@ add_library(minerby_core STATIC
   src/telemetry/http_server.cpp
   src/config/config.cpp
 )
+
+if(MINERBY_WITH_RANDOMX)
+  target_sources(minerby_core PRIVATE
+    src/pow/randomx_context.cpp
+    src/pow/randomx_hasher.cpp)
+  target_link_libraries(minerby_core PUBLIC randomx)
+  target_include_directories(minerby_core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/RandomX/src)
+  target_compile_definitions(minerby_core PUBLIC MINERBY_WITH_RANDOMX=1)
+endif()
 
 target_include_directories(minerby_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src
