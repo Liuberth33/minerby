@@ -16,8 +16,10 @@
 /config.json
 *.local.json
 
-# Field-test logs
+# Runtime state / logs
 *.log
+minerby-stats.json
+minerby-stats.json.tmp
 
 # Editor / OS
 .vs/

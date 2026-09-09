@@ -6,7 +6,9 @@
   "user": "YOUR_XMR_ADDRESS",
   "pass": "minerby",
   "threads": 0,
+  "cpu_priority": "low",
   "metrics_port": 9101,
+  "stats_file": "",
   "randomx": {
     "mode": "light",
     "init_threads": 0,

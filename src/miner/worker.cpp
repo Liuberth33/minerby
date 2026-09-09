@@ -3,13 +3,15 @@
 #include <chrono>
 
 #include "pow/target.hpp"
+#include "util/platform.hpp"
 
 namespace minerby {
 
 MinerPool::MinerPool(std::function<std::unique_ptr<IHasher>()> make_hasher,
-                     unsigned threads)
+                     unsigned threads, bool low_priority)
     : make_hasher_(std::move(make_hasher)),
-      threads_(threads == 0 ? 1u : threads) {}
+      threads_(threads == 0 ? 1u : threads),
+      low_priority_(low_priority) {}
 
 MinerPool::~MinerPool() { stop(); }
 
@@ -56,6 +58,7 @@ void MinerPool::rebuild_hashers() {
 }
 
 void MinerPool::run(unsigned index) {
+  if (low_priority_) set_thread_low_priority();
   std::unique_ptr<IHasher> hasher = make_hasher_();
   uint64_t local_hasher_gen = hasher_gen_.load(std::memory_order_acquire);
 

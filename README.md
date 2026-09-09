@@ -46,7 +46,8 @@ ver una cifra aproximada antes de dejarlo corriendo.
 | **0** | Scaffold: CMake, módulos `net` / `pool` / `pow` / `miner` / `telemetry` / `config`, tests, CI | ✅ |
 | **1** | `Sha256dHasher` propio + Stratum V1 (subscribe/authorize/notify/set_difficulty/submit) + ensamblado coinbase/merkle/header. Falta prueba de envío de shares contra un pool real. | ✅ (código) |
 | **2** | `RandomXHasher` (submódulo `third_party/RandomX`, pin `v1.2.3` = `rx/0` de Monero mainnet) + protocolo Monero/xmrig (login/job/submit) + pipeline `MiningJob` genérico + `minerby estimate`. | ✅ |
-| **3** | Modo `--engine xmrig` (supervisar XMRig), feed de precio en vivo, servicio de Windows, dashboard web, failover multi-pool, huge pages. | ⏳ |
+| **3** | Operación 24/7 desatendida: prioridad de CPU baja, estadísticas persistentes (`minerby-stats.json`), watchdog de conexión, apagado limpio (Ctrl+C / cierre de consola / logoff), `run --for N`, scripts de auto-reinicio y auto-arranque. | ✅ |
+| **3+** | Pendiente: modo `--engine xmrig`, feed de precio en vivo, servicio de Windows nativo, dashboard web, failover multi-pool. | ⏳ |
 
 ---
 
@@ -117,7 +118,9 @@ copy config.monero.example.json config.json     # edítalo con tu dirección XMR
   "user": "TU_DIRECCION_XMR",     // el pool paga aquí; puede ser tu depósito de Binance
   "pass": "minerby",
   "threads": 0,                    // 0 = auto
+  "cpu_priority": "low",           // "low" cede al escritorio · "normal" = máx. velocidad
   "metrics_port": 9101,            // 0 = desactivado; expone /metrics (Prometheus)
+  "stats_file": "",               // "" = minerby-stats.json junto al config
   "randomx": {
     "mode": "light",              // "light" = 256 MB · "fast" = ~2.3 GB (mucho más rápido)
     "init_threads": 0,            // hilos para construir el dataset en modo fast
@@ -134,6 +137,37 @@ copy config.monero.example.json config.json     # edítalo con tu dirección XMR
 veces más rápido, pero necesita ~2.3 GB de RAM libre. `light` usa solo la caché
 de 256 MB. El seed de RandomX (`seed_hash`) cambia cada ~3 días en mainnet;
 `minerby` re-deriva la caché automáticamente y pausa los hilos mientras tanto.
+
+### Dejarlo minando 24/7
+
+```powershell
+# Supervisor: relanza minerby si se cae. Ctrl+C para parar.
+./scripts/mine-forever.ps1
+
+# Auto-arranque al iniciar sesión (tarea programada de usuario, sin admin):
+./scripts/install-autostart.ps1
+#   Start-ScheduledTask -TaskName minerby   / Stop-ScheduledTask / Unregister-ScheduledTask
+```
+
+Para operación desatendida:
+- `"cpu_priority": "low"` (por defecto) baja la prioridad de los hilos: el
+  escritorio sigue usable y genera menos calor. Pon `"normal"` para máxima
+  velocidad.
+- Ajusta `"threads"` a mano (p. ej. núcleos − 2) si quieres dejar CPU libre.
+- `minerby-stats.json` (junto al config) acumula shares, hashes, sesiones y
+  horas totales entre reinicios. Ruta configurable con `"stats_file"`.
+- Un watchdog reconecta si el pool deja de mandar trabajos en 150 s.
+- Cierre limpio con Ctrl+C, al cerrar la consola o al cerrar sesión — guarda las
+  estadísticas antes de salir.
+- `run --for 3600` mina una hora y para sola (útil con el Programador de tareas).
+
+**Aviso de hardware:** una laptop al 100 % de CPU durante semanas sufre
+desgaste de ventilador y, si está siempre enchufada y caliente, de batería.
+`cpu_priority: low` y dejar 1-2 núcleos libres lo mitigan.
+
+**Pago mínimo del pool:** con hashrate bajo tardarás mucho en cobrar. Elige un
+pool con umbral de pago bajo (0.001–0.01 XMR) o mira P2Pool. supportxmr y
+herominers tienen mínimo 0.1 XMR — a ~200 H/s eso son años.
 
 ### Minar contra un pool SHA-256 (Stratum V1)
 
@@ -155,9 +189,10 @@ src/
   stratum/     parseo de mining.notify/subscribe + ensamblado header/merkle
   pow/         IHasher · SHA-256 · Sha256dHasher · target/dificultad ·
                RandomXContext (caché/dataset compartidos) · RandomXHasher
-  miner/       MiningJob genérico · pool de hilos (nonce, pausa, reseed)
-  telemetry/   contadores, hashrate (EMA), servidor HTTP /metrics
+  miner/       MiningJob genérico · pool de hilos (nonce, pausa, reseed, prioridad)
+  telemetry/   contadores, hashrate (EMA), /metrics, stats persistentes
   config/      carga de configuración JSON + overrides CLI
+  util/        hex · prioridad de hilo por plataforma
   app/         subcomandos bench / run / estimate
 third_party/
   RandomX/     submódulo, pin v1.2.3 (rx/0 de Monero mainnet)

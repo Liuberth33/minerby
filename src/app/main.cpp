@@ -22,6 +22,7 @@
 #include "pow/sha256d_hasher.hpp"
 #include "telemetry/http_server.hpp"
 #include "telemetry/metrics.hpp"
+#include "telemetry/stats_store.hpp"
 
 #ifdef MINERBY_WITH_RANDOMX
 #include "pow/randomx_context.hpp"
@@ -36,6 +37,22 @@ namespace {
 
 std::atomic<bool> g_stop{false};
 void on_signal(int) { g_stop.store(true); }
+
+#ifdef _WIN32
+BOOL WINAPI console_ctrl_handler(DWORD type) {
+  switch (type) {
+    case CTRL_C_EVENT:
+    case CTRL_BREAK_EVENT:
+    case CTRL_CLOSE_EVENT:
+    case CTRL_LOGOFF_EVENT:
+    case CTRL_SHUTDOWN_EVENT:
+      g_stop.store(true);
+      return TRUE;
+    default:
+      return FALSE;
+  }
+}
+#endif
 
 std::string human_hashrate(double hs) {
   const char* unit = "H/s";
@@ -55,6 +72,13 @@ double available_ram_mb() {
   if (GlobalMemoryStatusEx(&ms)) return static_cast<double>(ms.ullAvailPhys) / (1024.0 * 1024.0);
 #endif
   return -1.0;
+}
+
+std::string default_stats_path(const std::string& config_path) {
+  const auto slash = config_path.find_last_of("/\\");
+  const std::string dir =
+      (slash == std::string::npos) ? std::string{} : config_path.substr(0, slash + 1);
+  return dir + "minerby-stats.json";
 }
 
 // ---------------------------------------------------------------------------
@@ -161,11 +185,12 @@ int cmd_estimate(double hashrate, double net_diff, double block_reward,
 // ---------------------------------------------------------------------------
 // run
 // ---------------------------------------------------------------------------
-int cmd_run(const minerby::Config& cfg, double test_share_diff) {
+int cmd_run(const minerby::Config& cfg, double test_share_diff,
+            const std::string& stats_path, int run_for_seconds) {
   const unsigned threads = cfg.effective_threads();
-  spdlog::info("run: protocol={} engine={} pool={}:{} user={} threads={}",
+  spdlog::info("run: protocol={} engine={} pool={}:{} user={} threads={} priority={}",
                cfg.protocol, cfg.engine, cfg.pool_host, cfg.pool_port, cfg.user,
-               threads);
+               threads, cfg.cpu_priority);
   if (test_share_diff > 0.0) {
     spdlog::warn(
         "--share-diff {:.0f}: forcing an artificially low target for testing; "
@@ -211,10 +236,29 @@ int cmd_run(const minerby::Config& cfg, double test_share_diff) {
         cfg.pool_host, cfg.pool_port, cfg.user, cfg.pass);
   }
 
-  minerby::MinerPool pool(factory, threads);
+  minerby::MinerPool pool(factory, threads, cfg.low_priority());
   minerby::Metrics metrics;
   std::mutex submit_mtx;
   std::vector<uint8_t> current_seed;
+
+  minerby::StatsStore stats(stats_path);
+  const minerby::LifetimeStats base = stats.load();
+  const auto run_start = std::chrono::steady_clock::now();
+  auto last_job_at = std::chrono::steady_clock::now();
+  auto persist = [&](bool final_flush) {
+    minerby::LifetimeStats s = base;
+    s.accepted += metrics.accepted();
+    s.rejected += metrics.rejected();
+    s.hashes += pool.total_hashes();
+    s.uptime_s +=
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - run_start)
+            .count();
+    s.sessions = base.sessions + 1;
+    stats.save(s);
+    if (final_flush)
+      spdlog::info("lifetime: {}A/{}R shares over {} sessions, {:.1f}h uptime",
+                   s.accepted, s.rejected, s.sessions, s.uptime_s / 3600.0);
+  };
 
   minerby::PoolClient::Callbacks cb;
   cb.on_job = [&](const minerby::MiningJob& job_in, const std::vector<uint8_t>& seed) {
@@ -238,6 +282,7 @@ int cmd_run(const minerby::Config& cfg, double test_share_diff) {
     if (!pool.running()) pool.start();
     pool.set_work(job);
     metrics.set_difficulty(pool_client->difficulty());
+    last_job_at = std::chrono::steady_clock::now();
   };
   cb.on_submit_result = [&](bool ok, const std::string&) {
     if (ok) metrics.share_accepted();
@@ -263,9 +308,17 @@ int cmd_run(const minerby::Config& cfg, double test_share_diff) {
   }
 
   int backoff = 1;
-  auto next_status = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  const auto k5s = std::chrono::seconds(5);
+  auto next_status = std::chrono::steady_clock::now() + k5s;
+  auto next_persist = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  constexpr auto kJobTimeout = std::chrono::seconds(150);
 
+  const auto deadline = run_start + std::chrono::seconds(run_for_seconds);
   while (!g_stop.load()) {
+    if (run_for_seconds > 0 && std::chrono::steady_clock::now() >= deadline) {
+      spdlog::info("run duration reached, stopping");
+      break;
+    }
     if (!pool_client->connected()) {
       spdlog::info("connecting to pool...");
       if (!pool_client->connect()) {
@@ -276,6 +329,7 @@ int cmd_run(const minerby::Config& cfg, double test_share_diff) {
         continue;
       }
       backoff = 1;
+      last_job_at = std::chrono::steady_clock::now();
     }
 
     if (!pool_client->poll(1000)) {
@@ -283,6 +337,20 @@ int cmd_run(const minerby::Config& cfg, double test_share_diff) {
       pool_client->disconnect();
       pool.clear_work();
       continue;
+    }
+
+    // Watchdog: a healthy pool sends fresh jobs well within this window.
+    if (std::chrono::steady_clock::now() - last_job_at > kJobTimeout) {
+      spdlog::warn("no job for {}s, forcing reconnect",
+                   std::chrono::duration_cast<std::chrono::seconds>(kJobTimeout).count());
+      pool_client->disconnect();
+      pool.clear_work();
+      continue;
+    }
+
+    if (std::chrono::steady_clock::now() >= next_persist) {
+      persist(false);
+      next_persist += std::chrono::seconds(30);
     }
 
     if (std::chrono::steady_clock::now() >= next_status) {
@@ -308,6 +376,7 @@ int cmd_run(const minerby::Config& cfg, double test_share_diff) {
   pool.stop();
   if (http) http->stop();
   pool_client->disconnect();
+  persist(true);
   return 0;
 }
 
@@ -316,6 +385,9 @@ int cmd_run(const minerby::Config& cfg, double test_share_diff) {
 int main(int argc, char** argv) {
   std::signal(SIGINT, on_signal);
   std::signal(SIGTERM, on_signal);
+#ifdef _WIN32
+  SetConsoleCtrlHandler(console_ctrl_handler, TRUE);
+#endif
   spdlog::set_pattern("%^[%H:%M:%S] [%l]%$ %v");
   spdlog::flush_on(spdlog::level::trace);  // don't lose the tail if killed
 
@@ -351,6 +423,8 @@ int main(int argc, char** argv) {
   run->add_option("--share-diff", share_diff,
                   "TEST ONLY: force this local share difficulty to exercise the "
                   "submit path (pool will reject as low-difficulty)");
+  int run_for = 0;
+  run->add_option("--for", run_for, "Stop cleanly after N seconds (0 = run until interrupted)");
 
   auto* est = app.add_subcommand("estimate", "Rough profitability estimate");
   double est_hr = 0, est_diff = 0, est_reward = 0.6, est_price = 0;
@@ -378,7 +452,9 @@ int main(int argc, char** argv) {
       if (ov_threads >= 0) cfg.threads = ov_threads;
       if (ov_metrics >= 0) cfg.metrics_port = static_cast<uint16_t>(ov_metrics);
       cfg.validate();
-      return cmd_run(cfg, share_diff);
+      const std::string stats_path =
+          cfg.stats_file.empty() ? default_stats_path(cfg_path) : cfg.stats_file;
+      return cmd_run(cfg, share_diff, stats_path, run_for);
     } catch (const std::exception& e) {
       spdlog::error("{}", e.what());
       return 1;

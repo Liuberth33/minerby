@@ -30,6 +30,8 @@ Config Config::from_file(const std::string& path) {
   c.pass = j.value("pass", c.pass);
   c.threads = j.value("threads", c.threads);
   c.metrics_port = j.value("metrics_port", c.metrics_port);
+  c.cpu_priority = j.value("cpu_priority", c.cpu_priority);
+  c.stats_file = j.value("stats_file", c.stats_file);
   c.net_difficulty = j.value("net_difficulty", c.net_difficulty);
   c.block_reward = j.value("block_reward", c.block_reward);
   c.coin_price_usd = j.value("coin_price_usd", c.coin_price_usd);
@@ -51,6 +53,8 @@ void Config::validate() const {
   if (pool_port == 0) throw std::runtime_error("config: pool_port is required");
   if (user.empty()) throw std::runtime_error("config: user is required");
   if (threads < 0) throw std::runtime_error("config: threads must be >= 0");
+  if (cpu_priority != "low" && cpu_priority != "normal")
+    throw std::runtime_error("config: cpu_priority must be 'low' or 'normal'");
 
   if (protocol == "bitcoin") {
     if (engine != "sha256d")

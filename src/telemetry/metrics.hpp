@@ -26,6 +26,10 @@ class Metrics {
   void share_rejected() { rejected_.fetch_add(1, std::memory_order_relaxed); }
   void set_difficulty(double d) { difficulty_.store(d, std::memory_order_relaxed); }
 
+  uint64_t accepted() const { return accepted_.load(std::memory_order_relaxed); }
+  uint64_t rejected() const { return rejected_.load(std::memory_order_relaxed); }
+  uint64_t hashes() const { return hashes_.load(std::memory_order_relaxed); }
+
   Snapshot snapshot();
   std::string prometheus();
 

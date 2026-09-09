@@ -22,6 +22,8 @@ struct Config {
   std::string pass = "x";
   int threads = 0;             // 0 => hardware_concurrency()
   uint16_t metrics_port = 0;   // 0 => disabled
+  std::string cpu_priority = "low";  // "low" (yield to the desktop) or "normal"
+  std::string stats_file;      // empty => <config dir>/minerby-stats.json
 
   RandomXConfig randomx;
 
@@ -33,6 +35,7 @@ struct Config {
   void validate() const;
   unsigned effective_threads() const;
   bool randomx_fast() const { return randomx.mode == "fast"; }
+  bool low_priority() const { return cpu_priority != "normal"; }
 };
 
 }  // namespace minerby

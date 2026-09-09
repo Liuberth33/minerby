@@ -6,6 +6,7 @@ add_executable(minerby_tests
   test_stratum.cpp
   test_monero.cpp
   test_randomx.cpp
+  test_stats.cpp
 )
 target_link_libraries(minerby_tests PRIVATE minerby_core doctest::doctest)
 if(MSVC)

@@ -17,7 +17,8 @@ namespace minerby {
 // MiningJob. Replacing the job (set_work) makes every worker restart.
 class MinerPool {
  public:
-  MinerPool(std::function<std::unique_ptr<IHasher>()> make_hasher, unsigned threads);
+  MinerPool(std::function<std::unique_ptr<IHasher>()> make_hasher, unsigned threads,
+            bool low_priority = false);
   ~MinerPool();
 
   void start();
@@ -48,6 +49,7 @@ class MinerPool {
 
   std::function<std::unique_ptr<IHasher>()> make_hasher_;
   unsigned threads_;
+  bool low_priority_;
 
   std::vector<std::thread> pool_;
   std::atomic<bool> running_{false};

@@ -77,7 +77,9 @@ add_library(minerby_core STATIC
   src/miner/worker.cpp
   src/telemetry/metrics.cpp
   src/telemetry/http_server.cpp
+  src/telemetry/stats_store.cpp
   src/config/config.cpp
+  src/util/platform.cpp
 )
 
 if(MINERBY_WITH_RANDOMX)
