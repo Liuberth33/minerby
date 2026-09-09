@@ -1,204 +1,183 @@
 # minerby
 
-Minero de CPU en C++ para aprender cómo funciona la minería Proof-of-Work de
-principio a fin: cliente de pool (**Stratum V1** y **protocolo Monero/xmrig**),
-kernels de hashing (**sha256d propio** y **RandomX**), pool de hilos y telemetría.
-Construido por fases.
+A from-scratch **CPU miner written in C++20** — built to understand Proof-of-Work
+mining end to end rather than to turn a profit. It speaks two pool protocols,
+ships two hashing engines, and runs unattended for weeks.
 
-> ⚠️ **Uso legítimo únicamente.** Ejecuta `minerby` solo en hardware que tú
-> posees o administras, y sé consciente del consumo de CPU/energía que implica.
-> No está pensado para instalarse en equipos ajenos ni para ocultar su
-> actividad. La minería sostenida en un portátil genera calor y desgaste: usa
-> `threads` para limitar el número de núcleos.
+![CI](https://github.com/Liuberth33/minerby/actions/workflows/ci.yml/badge.svg)
+&nbsp;·&nbsp; C++20 · CMake · MSVC / GCC · Windows + Linux
+
+> ⚠️ **Legitimate use only.** Run `minerby` on hardware you own or administer, and
+> be mindful of the CPU, power and heat it costs. It is not built to run on other
+> people's machines or to hide its activity.
 
 ---
 
-## El flujo completo
+## What it does
 
 ```
-minerby (este software)  ──▶  Pool de minería  ──▶  Tu wallet (dirección propia)
-        │                                                   │
-   calcula hashes                          el pool paga al alcanzar el mínimo
-                                                            │
-                                                            ▼
-                          Depósito en Binance  ──▶  Vender por USDT/USD  ──▶  Retirar
+minerby ──▶ mining pool ──▶ your wallet ──▶ exchange ──▶ fiat
+   │                            │
+ hashes                 pool pays out at its threshold
 ```
 
-`minerby` cubre solo el primer tramo: **entregar shares a un pool para que las
-monedas lleguen a una wallet**. La venta en Binance (u otra plataforma) la haces
-tú manualmente. Muchos pools de Monero permiten configurar la dirección de pago
-directamente como tu dirección de depósito del exchange.
+`minerby` covers the first hop: compute hashes, find shares, submit them so coins
+land in a wallet you control. Everything after that is manual.
 
-### Nota de rentabilidad (sé realista)
+| Layer | Implementation |
+|-------|----------------|
+| **Pool protocol** | Bitcoin-style **Stratum V1** *and* the **Monero / xmrig JSON** protocol, behind one `PoolClient` interface |
+| **PoW engine** | Hand-written streaming **SHA-256d**, and **RandomX** (`rx/0`, Monero mainnet) via the official library, behind one `IHasher` interface |
+| **Work** | Protocol-agnostic `MiningJob` (blob + nonce offset + 256-bit target); Stratum V1 path assembles the coinbase, folds the merkle branch and lays out the 80-byte header |
+| **Mining** | Fixed thread pool scanning the nonce space, generation-based work replacement, pause/resume for RandomX re-keying, optional low scheduling priority |
+| **Ops** | Rolling-EMA hashrate, `/metrics` (Prometheus) HTTP endpoint, persistent lifetime stats across restarts, connection watchdog, clean shutdown, auto-restart scripts |
 
-En una CPU/portátil normal la minería rinde muy poco — a menudo entre céntimos y
-unos pocos dólares al día en bruto, y la electricidad puede costar más que lo que
-generas. Bitcoin es solo-ASIC; Ethereum ya no se mina (pasó a Proof-of-Stake).
-La opción viable para CPU es **Monero (RandomX)**. Usa `minerby estimate` para
-ver una cifra aproximada antes de dejarlo corriendo.
-
----
-
-## Roadmap por fases
-
-| Fase | Contenido | Estado |
-|------|-----------|--------|
-| **0** | Scaffold: CMake, módulos `net` / `pool` / `pow` / `miner` / `telemetry` / `config`, tests, CI | ✅ |
-| **1** | `Sha256dHasher` propio + Stratum V1 (subscribe/authorize/notify/set_difficulty/submit) + ensamblado coinbase/merkle/header. Falta prueba de envío de shares contra un pool real. | ✅ (código) |
-| **2** | `RandomXHasher` (submódulo `third_party/RandomX`, pin `v1.2.3` = `rx/0` de Monero mainnet) + protocolo Monero/xmrig (login/job/submit) + pipeline `MiningJob` genérico + `minerby estimate`. | ✅ |
-| **3** | Operación 24/7 desatendida: prioridad de CPU baja, estadísticas persistentes (`minerby-stats.json`), watchdog de conexión, apagado limpio (Ctrl+C / cierre de consola / logoff), `run --for N`, scripts de auto-reinicio y auto-arranque. | ✅ |
-| **3+** | Pendiente: modo `--engine xmrig`, feed de precio en vivo, servicio de Windows nativo, dashboard web, failover multi-pool. | ⏳ |
+Verified against a live Monero pool: login, job parsing, RandomX re-keying with
+the real network seed, share detection and `submit` all confirmed — the pool's
+server-side hash recomputation matched, shares were rejected only on difficulty.
 
 ---
 
-## Compilar (Windows / MSVC)
+## Build
 
-Necesitas **Visual Studio Build Tools** con el workload de C++ (MSVC + CMake +
-Ninja) y los submódulos:
+Needs a C++20 compiler (MSVC or GCC), CMake ≥ 3.24, Ninja, and the submodules.
+
+```bash
+git clone --recurse-submodules https://github.com/Liuberth33/minerby.git
+cd minerby
+```
+
+**Windows (MSVC):**
 
 ```powershell
-git submodule update --init --recursive
-./scripts/build.ps1
+./scripts/build.ps1          # locates the VS Build Tools and builds with Ninja
 ```
 
-O manualmente, dentro de un entorno con `vcvars64.bat` cargado:
+**Any platform:**
 
-```powershell
+```bash
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-La primera configuración descarga `nlohmann/json`, `spdlog`, `CLI11` y `doctest`
-con `FetchContent`, y compila RandomX desde `third_party/RandomX`. Para una build
-sin RandomX (solo sha256d): `-DMINERBY_WITH_RANDOMX=OFF`.
-
-### Antivirus
-
-Todo software de minería dispara heurísticas de "coinminer" (Avast marca
-`Win64:CoinMiner` / PUP). Si el antivirus bloquea la compilación o los binarios,
-**añade la carpeta del proyecto a las excepciones del antivirus** (en Avast:
-Menú → Configuración → General → Excepciones → añadir `C:\ruta\a\minerby`). Es
-un falso positivo por ser un miner sin firmar, no una infección.
+`FetchContent` pulls `nlohmann/json`, `spdlog`, `CLI11` and `doctest`; RandomX is
+built from `third_party/RandomX`. Build without RandomX (SHA-256d only) with
+`-DMINERBY_WITH_RANDOMX=OFF`.
 
 ---
 
-## Uso
+## Usage
 
-### Benchmark de un kernel
+### Benchmark a kernel (no network)
 
-```powershell
+```bash
 ./build/minerby bench --engine sha256d --threads 4 --seconds 15
-./build/minerby bench --engine randomx --threads 4 --seconds 30          # RandomX light
-./build/minerby bench --engine randomx --fast --threads 8 --seconds 30   # RandomX fast (~2.3 GB)
+./build/minerby bench --engine randomx --threads 4 --seconds 30           # light (256 MB)
+./build/minerby bench --engine randomx --fast --threads 8 --seconds 30    # fast (~2.3 GB dataset)
 ```
 
-### Estimación de rentabilidad
+### Estimate profitability
 
-```powershell
+```bash
 ./build/minerby estimate --hashrate 2500 --net-difficulty 400000000000 --xmr-price 150
 ```
 
-Toma la dificultad de red de un explorador de bloques o de la página de stats del
-pool. La cifra ignora comisiones, varianza y deriva de dificultad.
+### Mine
 
-### Minar Monero (RandomX)
-
-```powershell
-copy config.monero.example.json config.json     # edítalo con tu dirección XMR y tu pool
+```bash
+cp config.monero.example.json config.json      # edit with your address + pool
 ./build/minerby run --config config.json
 ```
 
+`config.json` is git-ignored — never commit credentials or a wallet address.
+
 ```jsonc
 {
-  "protocol": "monero",
-  "engine": "randomx",
-  "pool_host": "pool.ejemplo.com",
-  "pool_port": 3333,
-  "user": "TU_DIRECCION_XMR",     // el pool paga aquí; puede ser tu depósito de Binance
-  "pass": "minerby",
-  "threads": 0,                    // 0 = auto
-  "cpu_priority": "low",           // "low" cede al escritorio · "normal" = máx. velocidad
-  "metrics_port": 9101,            // 0 = desactivado; expone /metrics (Prometheus)
-  "stats_file": "",               // "" = minerby-stats.json junto al config
+  "protocol":     "monero",        // "monero" (RandomX) or "bitcoin" (Stratum V1)
+  "engine":       "randomx",       // "randomx" or "sha256d"
+  "pool_host":    "pool.example.com",
+  "pool_port":    3333,            // must be a non-TLS port
+  "user":         "YOUR_ADDRESS",  // the pool pays here
+  "pass":         "minerby",
+  "threads":      0,               // 0 = auto
+  "cpu_priority": "low",           // "low" yields to the desktop; "normal" = max speed
+  "metrics_port": 9101,            // 0 = off; else serves /metrics (Prometheus)
+  "stats_file":   "",              // "" = minerby-stats.json next to the config
   "randomx": {
-    "mode": "light",              // "light" = 256 MB · "fast" = ~2.3 GB (mucho más rápido)
-    "init_threads": 0,            // hilos para construir el dataset en modo fast
-    "large_pages": false,         // requiere privilegio del SO; +2-3x cuando está disponible
-    "secure": false               // JIT con W^X (sistemas endurecidos)
+    "mode":         "light",       // "light" (256 MB) or "fast" (~2.3 GB, much faster)
+    "init_threads": 0,
+    "large_pages":  false,
+    "secure":       false
   },
-  "net_difficulty": 0,            // >0 activa la estimación en vivo en el log
-  "block_reward": 0.6,
+  "net_difficulty": 0,             // > 0 prints a live earnings estimate
+  "block_reward":   0.6,
   "coin_price_usd": 0
 }
 ```
 
-**Modo light vs fast:** `fast` reserva el dataset de RandomX (~2 GB) y es varias
-veces más rápido, pero necesita ~2.3 GB de RAM libre. `light` usa solo la caché
-de 256 MB. El seed de RandomX (`seed_hash`) cambia cada ~3 días en mainnet;
-`minerby` re-deriva la caché automáticamente y pausa los hilos mientras tanto.
+### Run it 24/7
 
-### Dejarlo minando 24/7
-
-```powershell
-# Supervisor: relanza minerby si se cae. Ctrl+C para parar.
-./scripts/mine-forever.ps1
-
-# Auto-arranque al iniciar sesión (tarea programada de usuario, sin admin):
-./scripts/install-autostart.ps1
-#   Start-ScheduledTask -TaskName minerby   / Stop-ScheduledTask / Unregister-ScheduledTask
+```bash
+./scripts/mine-forever.ps1            # relaunches minerby if it exits
+./scripts/install-autostart.ps1       # per-user scheduled task, starts at logon (no admin)
 ```
 
-Para operación desatendida:
-- `"cpu_priority": "low"` (por defecto) baja la prioridad de los hilos: el
-  escritorio sigue usable y genera menos calor. Pon `"normal"` para máxima
-  velocidad.
-- Ajusta `"threads"` a mano (p. ej. núcleos − 2) si quieres dejar CPU libre.
-- `minerby-stats.json` (junto al config) acumula shares, hashes, sesiones y
-  horas totales entre reinicios. Ruta configurable con `"stats_file"`.
-- Un watchdog reconecta si el pool deja de mandar trabajos en 150 s.
-- Cierre limpio con Ctrl+C, al cerrar la consola o al cerrar sesión — guarda las
-  estadísticas antes de salir.
-- `run --for 3600` mina una hora y para sola (útil con el Programador de tareas).
-
-**Aviso de hardware:** una laptop al 100 % de CPU durante semanas sufre
-desgaste de ventilador y, si está siempre enchufada y caliente, de batería.
-`cpu_priority: low` y dejar 1-2 núcleos libres lo mitigan.
-
-**Pago mínimo del pool:** con hashrate bajo tardarás mucho en cobrar. Elige un
-pool con umbral de pago bajo (0.001–0.01 XMR) o mira P2Pool. supportxmr y
-herominers tienen mínimo 0.1 XMR — a ~200 H/s eso son años.
-
-### Minar contra un pool SHA-256 (Stratum V1)
-
-```powershell
-copy config.bitcoin.example.json config.json
-./build/minerby run --config config.json
-```
-
-`config.json` está en `.gitignore` — nunca subas tus credenciales ni tu wallet.
+`minerby-stats.json` accumulates shares, hashes, sessions and total uptime across
+restarts. A watchdog reconnects if the pool goes quiet for 150 s. `Ctrl+C`,
+closing the console, or logging off all shut down cleanly and flush stats.
+`run --for 3600` mines for an hour and stops.
 
 ---
 
-## Estructura
+## Layout
 
 ```
 src/
-  net/         TCP cliente (Winsock/POSIX) con lectura por líneas
+  net/         blocking TCP client with line-oriented reads (Winsock / POSIX)
   pool/        PoolClient · StratumV1Client (sha256d) · MoneroClient (RandomX)
-  stratum/     parseo de mining.notify/subscribe + ensamblado header/merkle
-  pow/         IHasher · SHA-256 · Sha256dHasher · target/dificultad ·
-               RandomXContext (caché/dataset compartidos) · RandomXHasher
-  miner/       MiningJob genérico · pool de hilos (nonce, pausa, reseed, prioridad)
-  telemetry/   contadores, hashrate (EMA), /metrics, stats persistentes
-  config/      carga de configuración JSON + overrides CLI
-  util/        hex · prioridad de hilo por plataforma
-  app/         subcomandos bench / run / estimate
+  stratum/     mining.notify / subscribe parsing + coinbase/merkle/header assembly
+  pow/         IHasher · SHA-256 · Sha256dHasher · target/difficulty math ·
+               RandomXContext (shared cache/dataset) · RandomXHasher
+  miner/       generic MiningJob · worker thread pool (nonce, pause, reseed, priority)
+  telemetry/   counters, EMA hashrate, /metrics server, persistent stats
+  config/      JSON config + CLI overrides
+  util/        hex helpers, per-platform thread priority
+  app/         bench / run / estimate subcommands
 third_party/
-  RandomX/     submódulo, pin v1.2.3 (rx/0 de Monero mainnet)
-tests/         KATs de SHA-256 y RandomX, hex, target, Monero target, parseo
+  RandomX/     submodule, pinned to v1.2.3 (rx/0, Monero mainnet)
+tests/         SHA-256 & RandomX known-answer vectors, hex, target/difficulty,
+               Monero target expansion, Stratum parsing, stats store
 ```
 
-## Licencia
+Tests: 27 cases / 192 assertions. CI builds and tests on Windows and Linux.
 
-MIT — ver [LICENSE](LICENSE). RandomX es MIT, © tevador / The Monero Project.
+---
+
+## Status
+
+| Phase | Scope | State |
+|-------|-------|-------|
+| 0 | Scaffold, CMake, module layout, CI | ✅ |
+| 1 | SHA-256d + full Stratum V1 + coinbase/merkle/header assembly | ✅ |
+| 2 | RandomX engine + Monero protocol + generic pipeline + `estimate` | ✅ |
+| 3 | Unattended 24/7: low priority, persistent stats, watchdog, clean shutdown, auto-restart | ✅ |
+| 3+ | `--engine xmrig` supervisor, live price feed, native Windows service, web dashboard, multi-pool failover | ⏳ |
+
+**Parked pending hardware.** CPU mining Monero on a thin laptop earns cents per
+month — less than the electricity. The project is complete and correct as an
+engineering exercise; it will be revisited on a machine (or dedicated rig) where
+the numbers make sense.
+
+### Antivirus
+
+Any miner trips "coinminer" heuristics (Avast flags `Win64:CoinMiner` and
+DNS-blocks pool domains). If a security suite blocks the build or the binary, add
+the project folder to its exceptions and/or allow the pool domain — it is a
+false positive on an unsigned mining binary, not an infection.
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE). RandomX is MIT, © tevador / The Monero Project.
