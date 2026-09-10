@@ -1,8 +1,11 @@
 # minerby
 
-A from-scratch **CPU miner written in C++20** — built to understand Proof-of-Work
-mining end to end rather than to turn a profit. It speaks two pool protocols,
-ships two hashing engines, and runs unattended for weeks.
+**A learning project.** I built `minerby` with AI assistance
+([Claude Code](https://claude.com/claude-code)) to understand how Proof-of-Work
+mining actually works — end to end, in code, not just as a concept. The result
+is a working, tested CPU miner in **C++20**: two pool protocols, two hashing
+engines, unattended operation. It is **not** a production miner and was never
+meant to be competitive — see [Status](#status).
 
 ![CI](https://github.com/Liuberth33/minerby/actions/workflows/ci.yml/badge.svg)
 &nbsp;·&nbsp; C++20 · CMake · MSVC / GCC · Windows + Linux
@@ -36,6 +39,30 @@ land in a wallet you control. Everything after that is manual.
 Verified against a live Monero pool: login, job parsing, RandomX re-keying with
 the real network seed, share detection and `submit` all confirmed — the pool's
 server-side hash recomputation matched, shares were rejected only on difficulty.
+
+---
+
+## What building this taught me
+
+- **How a miner and a pool actually talk.** Two different wire protocols:
+  Stratum V1 (line-delimited JSON-RPC — `subscribe` / `notify` / `submit`, and
+  the *client* builds the block header from a coinbase template + merkle branch)
+  versus the Monero / xmrig protocol (`login` hands back a ready-to-hash `blob`,
+  the nonce sits at a fixed offset, `seed_hash` selects the algorithm state).
+- **Why RandomX exists and what it costs.** It is deliberately memory-hard to
+  resist ASICs: a 256 MB cache ("light") or a ~2 GB dataset ("fast") that has to
+  be re-derived whenever the network seed rolls (~every 3 days). Fast mode is
+  several times quicker but needs the RAM.
+- **Nonce, target and difficulty.** A share is just a hash that sorts below a
+  target; difficulty is a friendlier form of that same number. The pool
+  recomputes every submitted hash before it trusts the share.
+- **The economics don't work on consumer hardware.** CPU-mining Monero is
+  dominated by the price of electricity. On a laptop the gross is cents per
+  month — less than the power it draws. That was the real conclusion.
+- **First contact with C++ systems plumbing:** interfaces + `unique_ptr`
+  ownership, a fixed thread pool over `std::atomic` / `std::mutex`, CMake with
+  `FetchContent` and a git submodule, unit tests with doctest, and CI on Windows
+  (MSVC) and Linux (GCC).
 
 ---
 
@@ -166,9 +193,9 @@ Tests: 27 cases / 192 assertions. CI builds and tests on Windows and Linux.
 | 3+ | `--engine xmrig` supervisor, live price feed, native Windows service, web dashboard, multi-pool failover | ⏳ |
 
 **Parked pending hardware.** CPU mining Monero on a thin laptop earns cents per
-month — less than the electricity. The project is complete and correct as an
-engineering exercise; it will be revisited on a machine (or dedicated rig) where
-the numbers make sense.
+month — less than the electricity. The project is complete and correct as a
+learning exercise; it would only be worth revisiting on a machine (or dedicated
+rig) where the numbers make sense.
 
 ### Antivirus
 
@@ -181,9 +208,12 @@ false positive on an unsigned mining binary, not an infection.
 
 ## 🇪🇸 Español
 
-Minero de **CPU escrito desde cero en C++20**, hecho para entender la minería
-Proof-of-Work de principio a fin, no para ganar dinero. Habla dos protocolos de
-pool, trae dos motores de hashing y aguanta semanas funcionando solo.
+**Un proyecto de aprendizaje.** Construí `minerby` con asistencia de IA
+([Claude Code](https://claude.com/claude-code)) para entender cómo funciona de
+verdad la minería Proof-of-Work — de principio a fin, en código, no solo como
+concepto. El resultado es un minero de CPU funcional y con tests, en **C++20**:
+dos protocolos de pool, dos motores de hashing, operación desatendida. **No** es
+un minero de producción ni pretende competir — ver [Estado](#estado).
 
 > ⚠️ **Uso legítimo únicamente.** Ejecútalo en hardware que poseas o administres,
 > consciente de la CPU, la energía y el calor que cuesta. No está pensado para
@@ -206,6 +236,29 @@ exchange) es manual.
 Verificado contra un pool real de Monero: login, parseo de jobs, re-derivación de
 RandomX con el seed real de la red, detección y envío de shares — el pool
 recalculó el hash por su cuenta y coincidió; solo rechazó por dificultad.
+
+### Qué aprendí construyéndolo
+
+- **Cómo se hablan un minero y un pool.** Dos protocolos distintos: Stratum V1
+  (JSON-RPC por líneas — `subscribe` / `notify` / `submit`, y es el *cliente*
+  quien arma la cabecera del bloque a partir de un coinbase y una rama merkle)
+  frente al protocolo de Monero / xmrig (`login` devuelve un `blob` listo para
+  hashear, el nonce va en un offset fijo, `seed_hash` selecciona el estado del
+  algoritmo).
+- **Por qué existe RandomX y qué cuesta.** Está diseñado para ser *memory-hard*
+  y resistir ASICs: una caché de 256 MB ("light") o un dataset de ~2 GB
+  ("fast") que hay que re-derivar cada vez que rota el seed de la red (~cada 3
+  días). El modo fast es varias veces más rápido pero necesita la RAM.
+- **Nonce, target y dificultad.** Una share no es más que un hash que queda por
+  debajo de un target; la dificultad es ese mismo número en forma legible. El
+  pool recalcula cada hash enviado antes de fiarse.
+- **La economía no cuadra en hardware doméstico.** Minar Monero por CPU lo
+  domina el precio de la luz. En una laptop el bruto son céntimos al mes —
+  menos que lo que consume. Esa fue la conclusión real.
+- **Primer contacto con C++ de sistemas:** interfaces y propiedad con
+  `unique_ptr`, un pool de hilos fijo sobre `std::atomic` / `std::mutex`, CMake
+  con `FetchContent` y un submódulo git, tests con doctest, y CI en Windows
+  (MSVC) y Linux (GCC).
 
 ### Compilar
 
@@ -258,8 +311,8 @@ en vivo, servicio de Windows nativo, dashboard web, failover multi-pool.
 
 **Aparcado a la espera de hardware.** Minar Monero por CPU en una laptop fina
 deja céntimos al mes, menos que la electricidad. El proyecto está completo y
-correcto como ejercicio de ingeniería; se retomará en una máquina (o rig
-dedicado) donde los números tengan sentido.
+correcto como ejercicio de aprendizaje; solo valdría la pena retomarlo en una
+máquina (o rig dedicado) donde los números tengan sentido.
 
 ### Antivirus
 
